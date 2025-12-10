@@ -1,0 +1,14 @@
+# Build outputs
+build/
+*.elf
+*.map
+*.bin
+*.hex
+
+# Logs and debug artifacts
+*.log
+debug-*.log
+flash.log
+
+# OS junk
+.DS_Store
