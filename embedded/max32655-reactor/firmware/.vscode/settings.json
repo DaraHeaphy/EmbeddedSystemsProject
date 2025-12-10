@@ -1,0 +1,19 @@
+{
+  "C_Cpp.default.forcedInclude": [
+    "${workspaceFolder}/build/project_defines.h"
+  ],
+  "cfs.project.target": "MAX32655",
+  "cfs.jlink.device": "MAX32655",
+  "cfs.project.board": "FTHR_Apps_P1",
+  "cfs.programFile": "${workspaceFolder}/build/${workspaceFolderBasename}.elf",
+  "cfs.configureWorkspace": "Yes",
+  "cfs.project.firmwarePlatform": "MSDK",
+  "cfs.openocd.target": "target/max32655.cfg",
+  "cfs.openocd.interface": "interface/cmsis-dap.cfg",
+  "cfs.openocd.riscvTarget": "target/max32655_riscv.cfg",
+  "cfs.openocd.riscvInterface": "interface/ftdi/olimex-arm-usb-ocd-h.cfg",
+  "cfs.debugPath": "${workspaceFolder}/build",
+  "cfs.riscvProgramFile": "${workspaceFolder}/build/buildrv/riscv.elf",
+  "cfs.riscvDebugPath": "${workspaceFolder}/build/buildrv",
+  "cfs.activeContext": "firmware"
+}
