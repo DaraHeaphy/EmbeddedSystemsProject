@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# local helper scripts / generated combo outputs (do not commit)
+combine.py
+combined*.txt
+
+# common embedded build outputs
+build/
+*.o
+*.a
+*.elf
+*.map
+*.d
+*.su
+*.log
+EOF
