@@ -2,6 +2,8 @@
 #include "reactor_comms.h"
 
 #include <string.h>
+#include <stdarg.h>
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 

@@ -13,6 +13,7 @@
 
 // ESP-IDF drivers
 #include "driver/uart.h"
+#include <stdarg.h>
 #include "esp_log.h"
 
 #include "reactor_control.h"
