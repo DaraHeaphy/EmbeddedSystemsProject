@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>
+#include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "reactor_control.h"
 

@@ -5,6 +5,8 @@
 combine.py
 combined*.txt
 
+__pycache__/
+
 # common embedded build outputs
 build/
 *.o
