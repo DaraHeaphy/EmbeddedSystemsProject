@@ -1,3 +1,3 @@
 ## Cloud
 
-Contains http server implementation to live on alderaan.software-engineering.ie
+Contains cloud server implementation to live on alderaan.software-engineering.ie
