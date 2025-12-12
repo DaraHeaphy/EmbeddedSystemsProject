@@ -42,17 +42,17 @@ class MQTTBroker:
         server_socket.listen(5)
         
         print("=" * 60)
-        print("🚀 Custom MQTT Broker Started")
+        print(" Custom MQTT Broker Started")
         print("=" * 60)
-        print(f"📡 Listening on {self.host}:{self.port}")
-        print("⏳ Waiting for connections... (Press Ctrl+C to stop)\n")
+        print(f" Listening on {self.host}:{self.port}")
+        print(" Waiting for connections... (Press Ctrl+C to stop)\n")
         
         try:
             while self.running:
                 try:
                     server_socket.settimeout(1.0)
                     client_socket, address = server_socket.accept()
-                    print(f"🔌 New connection from {address}")
+                    print(f" New connection from {address}")
                     
                     # Handle client in new thread
                     client_thread = threading.Thread(
@@ -100,7 +100,7 @@ class MQTTBroker:
                             'id': client_id,
                             'address': address
                         }
-                    print(f"✅ Client connected: {client_id} ({address})")
+                    print(f" Client connected: {client_id} ({address})")
                     
                 elif packet_type == PUBLISH:
                     self.handle_publish(client_socket, first_byte[0], data)
@@ -112,11 +112,11 @@ class MQTTBroker:
                     self.send_pingresp(client_socket)
                     
                 elif packet_type == DISCONNECT:
-                    print(f"👋 Client disconnecting: {client_id}")
+                    print(f" Client disconnecting: {client_id}")
                     break
                     
         except Exception as e:
-            print(f"❌ Error handling client {client_id}: {e}")
+            print(f" Error handling client {client_id}: {e}")
         finally:
             self.cleanup_client(client_socket)
             
@@ -173,7 +173,7 @@ class MQTTBroker:
         payload = data[pos:]
         
         client_id = self.clients.get(client_socket, {}).get('id', 'unknown')
-        print(f"📨 PUBLISH from {client_id}: topic='{topic}', payload={payload[:50]}...")
+        print(f"PUBLISH from {client_id}: topic='{topic}', payload={payload[:50]}...")
         
         # Forward to subscribers
         self.forward_publish(topic, payload, flags)
@@ -209,7 +209,7 @@ class MQTTBroker:
             return_codes.append(qos)  # Grant requested QoS
             
         client_id = self.clients.get(client_socket, {}).get('id', 'unknown')
-        print(f"📌 SUBSCRIBE from {client_id}: topics={subscribed_topics}")
+        print(f" SUBSCRIBE from {client_id}: topics={subscribed_topics}")
         
         # Send SUBACK
         suback = struct.pack(">BBH", SUBACK, 2 + len(return_codes), msg_id)
@@ -230,23 +230,22 @@ class MQTTBroker:
                 if self.topic_matches(topic, sub_topic):
                     subscribers.update(clients)
             
-            # Build PUBLISH packet
-            topic_bytes = topic.encode('utf-8')
-            publish_packet = bytes([flags, 0])  # Placeholder for remaining length
-            publish_packet += struct.pack(">H", len(topic_bytes))
-            publish_packet += topic_bytes
-            publish_packet += payload
+            # Build PUBLISH packet as QoS 0 (no message ID needed)
+            qos0_flags = (flags & 0xF0) | 0x00  # Keep flags but set QoS to 0
             
-            # Update remaining length
-            remaining_length = len(publish_packet) - 2
-            publish_packet = bytes([flags]) + self.encode_remaining_length(remaining_length) + publish_packet[2:]
+            topic_bytes = topic.encode('utf-8')
+            variable_header = struct.pack(">H", len(topic_bytes)) + topic_bytes
+            
+            remaining_length = len(variable_header) + len(payload)
+            
+            publish_packet = bytes([qos0_flags]) + self.encode_remaining_length(remaining_length) + variable_header + payload
             
             # Send to all subscribers
             for subscriber in subscribers:
                 try:
                     subscriber.send(publish_packet)
                 except:
-                    pass  # Client disconnected
+                    pass
                     
     def topic_matches(self, topic: str, pattern: str) -> bool:
         """Check if topic matches subscription pattern (with wildcards)"""
@@ -285,7 +284,7 @@ class MQTTBroker:
             # Remove from clients
             if client_socket in self.clients:
                 client_id = self.clients[client_socket].get('id', 'unknown')
-                print(f"🔌 Client disconnected: {client_id}")
+                print(f"Client disconnected: {client_id}")
                 del self.clients[client_socket]
         
         try:
