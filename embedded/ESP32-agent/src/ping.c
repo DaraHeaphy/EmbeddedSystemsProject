@@ -17,6 +17,8 @@ static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static volatile bool s_stop_requested = false;
 static volatile bool s_mqtt_connected = false;
 static SemaphoreHandle_t s_mqtt_connected_sem = NULL;
+static mqtt_cmd_callback_t s_cmd_callback = NULL;
+static char s_cmd_topic[64] = {0};
 
 // Telemetry state for generating fake data
 typedef struct {
@@ -35,6 +37,11 @@ static const char *state_to_string(uint8_t state)
         case 2: return "SCRAM";
         default: return "UNKNOWN";
     }
+}
+
+void set_mqtt_cmd_callback(mqtt_cmd_callback_t cb)
+{
+    s_cmd_callback = cb;
 }
 
 // Generate realistic-looking fake telemetry
@@ -87,6 +94,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             if (s_mqtt_connected_sem) {
                 xSemaphoreGive(s_mqtt_connected_sem);
             }
+            // Subscribe to command topic if configured
+            if (s_cmd_topic[0] != '\0') {
+                int msg_id = esp_mqtt_client_subscribe(s_mqtt_client, s_cmd_topic, 1);
+                ESP_LOGI(TAG, "Subscribed to %s (msg_id=%d)", s_cmd_topic, msg_id);
+            }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -96,6 +108,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
         case MQTT_EVENT_PUBLISHED:
             ESP_LOGD(TAG, "MQTT message published, msg_id=%d", event->msg_id);
+            break;
+
+        case MQTT_EVENT_DATA:
+            ESP_LOGI(TAG, "MQTT data received on topic %.*s", event->topic_len, event->topic);
+            if (s_cmd_callback && event->data_len > 0) {
+                s_cmd_callback(event->data, event->data_len);
+            }
             break;
 
         case MQTT_EVENT_ERROR:
@@ -243,6 +262,14 @@ esp_err_t start_telemetry_sender(const telemetry_config_t *config)
 
     strncpy(params->pub_topic, config->pub_topic, sizeof(params->pub_topic) - 1);
     params->pub_topic[sizeof(params->pub_topic) - 1] = '\0';
+
+    // Copy command topic to static storage for subscription on connect
+    if (config->cmd_topic) {
+        strncpy(s_cmd_topic, config->cmd_topic, sizeof(s_cmd_topic) - 1);
+        s_cmd_topic[sizeof(s_cmd_topic) - 1] = '\0';
+    } else {
+        s_cmd_topic[0] = '\0';
+    }
 
     params->interval_ms = config->interval_ms > 0 ? config->interval_ms : 1000;
     params->count = config->count;

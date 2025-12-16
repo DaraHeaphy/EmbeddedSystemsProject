@@ -13,6 +13,7 @@
 
 #include "wifi.h"
 #include "ping.h"
+#include "cJSON.h"
 
 // ---------- protocol ----------
 #define FRAME_START_BYTE       0xAA
@@ -120,6 +121,39 @@ static void agent_send_set_power(int32_t value)
     memcpy(&payload[1], &value, sizeof(value)); // little-endian on ESP32
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
     printf("[agent] sent SET_POWER=%" PRId32 "\n", value);
+}
+
+// ---------- MQTT command handler ----------
+static void handle_mqtt_command(const char *data, int data_len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, data_len);
+    if (!root) {
+        ESP_LOGW(TAG, "Failed to parse command JSON");
+        return;
+    }
+
+    cJSON *cmd = cJSON_GetObjectItem(root, "command");
+    if (!cJSON_IsString(cmd)) {
+        ESP_LOGW(TAG, "Missing or invalid 'command' field");
+        cJSON_Delete(root);
+        return;
+    }
+
+    const char *cmd_str = cmd->valuestring;
+
+    if (strcmp(cmd_str, "SCRAM") == 0) {
+        agent_send_scram();
+    } else if (strcmp(cmd_str, "RESET_NORMAL") == 0) {
+        agent_send_reset_normal();
+    } else if (strcmp(cmd_str, "SET_POWER") == 0) {
+        cJSON *val = cJSON_GetObjectItem(root, "value");
+        int32_t power = cJSON_IsNumber(val) ? (int32_t)val->valueint : 50;
+        agent_send_set_power(power);
+    } else {
+        ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
+    }
+
+    cJSON_Delete(root);
 }
 
 // Track last sample we auto-reset on, to avoid duplicates if frames repeat
@@ -281,19 +315,23 @@ void app_main(void)
     // Initialize WiFi and connect
     esp_err_t wifi_ret = wifi_init_sta();
     if (wifi_ret == ESP_OK) {
-        ESP_LOGI(TAG, "WiFi connected, starting MQTT telemetry sender");
+        ESP_LOGI(TAG, "WiFi connected, starting MQTT");
+
+        // Register command handler before starting MQTT
+        set_mqtt_cmd_callback(handle_mqtt_command);
 
         // MQTT Configuration
         telemetry_config_t telem_config = {
             .broker_uri = "mqtt://alderaan.software-engineering.ie:1883",
             .client_id = "reactor_bridge_agent",
             .pub_topic = "reactor/sensors",
+            .cmd_topic = "reactor/commands",  // Subscribe for commands
             .interval_ms = 1000,  // Send every 1 second
             .count = 0,           // 0 = send forever
         };
         start_telemetry_sender(&telem_config);
     } else {
-        ESP_LOGW(TAG, "WiFi connection failed, skipping telemetry sender");
+        ESP_LOGW(TAG, "WiFi connection failed, skipping MQTT");
     }
 
     init_uart_link();
