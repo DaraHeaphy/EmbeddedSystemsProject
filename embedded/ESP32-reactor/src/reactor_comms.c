@@ -3,18 +3,17 @@
 
 #include <string.h>
 #include <stdarg.h>
-#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 
 static const char *TAG = "reactor_comms";
 
-#define REACTOR_UART_NUM           UART_NUM_0
-#define REACTOR_UART_TX_PIN        GPIO_NUM_1
-#define REACTOR_UART_RX_PIN        GPIO_NUM_3
-#define REACTOR_UART_BAUD_RATE     115200
+#define REACTOR_UART_NUM           REACTOR_LINK_UART_NUM
+#define REACTOR_UART_TX_PIN        REACTOR_LINK_UART_TX_PIN
+#define REACTOR_UART_RX_PIN        REACTOR_LINK_UART_RX_PIN
+#define REACTOR_UART_BAUD_RATE     REACTOR_LINK_UART_BAUD
 #define REACTOR_UART_RX_BUF_SIZE   256
-#define REACTOR_UART_TX_BUF_SIZE   0     // use FIFO only, blocking write
+#define REACTOR_UART_TX_BUF_SIZE   0
 
 static QueueHandle_t s_command_queue = NULL;
 

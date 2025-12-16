@@ -87,10 +87,10 @@ static void comms_task(void *pvParameters)
         }
 
         // 2) Read any incoming bytes and feed parser
-        int len = uart_read_bytes(UART_NUM_0,   // or expose from comms.h
-                                  rx_buf,
-                                  sizeof(rx_buf),
-                                  10 / portTICK_PERIOD_MS);
+        int len = uart_read_bytes(REACTOR_LINK_UART_NUM,
+                                rx_buf,
+                                sizeof(rx_buf),
+                                10 / portTICK_PERIOD_MS);
         if (len > 0) {
             reactor_comms_process_rx_bytes(rx_buf, (uint32_t)len);
         }
