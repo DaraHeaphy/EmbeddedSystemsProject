@@ -4,7 +4,7 @@ MQTT Web Dashboard Backend
 Bridges MQTT broker to WebSocket for web clients
 """
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request, jsonify
 from flask_socketio import SocketIO
 from flask_cors import CORS
 import paho.mqtt.client as mqtt
@@ -122,6 +122,38 @@ def init_mqtt():
 @app.route('/noises.mp3')
 def audio():
     return send_from_directory('public', 'noises.mp3')
+
+@app.route('/api/telemetry', methods=['POST'])
+def receive_telemetry():
+    """
+    HTTP POST endpoint for receiving telemetry from ESP32.
+    Expects JSON: {"sample_id": int, "temp": float, "accel_mag": float, "state": str, "power": int}
+    """
+    global latest_telemetry, stats
+
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({"error": "No JSON payload"}), 400
+
+        stats["messages_received"] += 1
+        timestamp = datetime.now().isoformat()
+
+        data = {
+            'topic': 'http/telemetry',
+            'payload': payload,
+            'timestamp': timestamp
+        }
+
+        latest_telemetry = data
+        socketio.emit('telemetry', data)
+        print(f"[HTTP] Telemetry received: sample={payload.get('sample_id')} temp={payload.get('temp')} state={payload.get('state')}")
+
+        return jsonify({"status": "ok", "sample_id": payload.get('sample_id')}), 200
+
+    except Exception as e:
+        print(f"[HTTP] Error processing telemetry: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/')
 def index():

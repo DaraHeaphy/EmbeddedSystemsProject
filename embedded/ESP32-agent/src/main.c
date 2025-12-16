@@ -281,11 +281,19 @@ void app_main(void)
     // Initialize WiFi and connect
     esp_err_t wifi_ret = wifi_init_sta();
     if (wifi_ret == ESP_OK) {
-        ESP_LOGI(TAG, "WiFi connected, starting ping to google.com");
-        // Ping google.com 5 times
-        ping_host("google.com", 5);
+        ESP_LOGI(TAG, "WiFi connected, starting MQTT telemetry sender");
+
+        // MQTT Configuration
+        telemetry_config_t telem_config = {
+            .broker_uri = "mqtt://alderaan.software-engineering.ie:1883",
+            .client_id = "reactor_bridge_agent",
+            .pub_topic = "reactor/sensors",
+            .interval_ms = 1000,  // Send every 1 second
+            .count = 0,           // 0 = send forever
+        };
+        start_telemetry_sender(&telem_config);
     } else {
-        ESP_LOGW(TAG, "WiFi connection failed, skipping ping");
+        ESP_LOGW(TAG, "WiFi connection failed, skipping telemetry sender");
     }
 
     init_uart_link();

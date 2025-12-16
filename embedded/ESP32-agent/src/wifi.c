@@ -100,6 +100,7 @@ esp_err_t wifi_init_sta(void)
                                            pdFALSE,
                                            portMAX_DELAY);
 
+    // Wait for connection or failure
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to AP SSID: %s", WIFI_SSID);
         return ESP_OK;
