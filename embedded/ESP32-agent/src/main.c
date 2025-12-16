@@ -11,6 +11,9 @@
 #include "esp_log.h"
 #include "esp_err.h"
 
+#include "wifi.h"
+#include "ping.h"
+
 // ---------- protocol ----------
 #define FRAME_START_BYTE       0xAA
 
@@ -274,6 +277,17 @@ static void reactor_rx_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "agent booting");
+
+    // Initialize WiFi and connect
+    esp_err_t wifi_ret = wifi_init_sta();
+    if (wifi_ret == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi connected, starting ping to google.com");
+        // Ping google.com 5 times
+        ping_host("google.com", 5);
+    } else {
+        ESP_LOGW(TAG, "WiFi connection failed, skipping ping");
+    }
+
     init_uart_link();
 
     xTaskCreate(reactor_rx_task, "reactor_rx", 4096, NULL, 5, NULL);
