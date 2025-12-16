@@ -11,8 +11,8 @@
 #include "nvs_flash.h"
 
 // -------- CONFIGURE YOUR WIFI CREDENTIALS HERE --------
-#define WIFI_SSID      "YOUR_WIFI_SSID"
-#define WIFI_PASS      "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID      "MoodysMobile"
+#define WIFI_PASS      "10564738"
 // -------------------------------------------------------
 
 #define WIFI_CONNECTED_BIT BIT0
