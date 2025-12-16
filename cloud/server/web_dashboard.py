@@ -13,10 +13,18 @@ import threading
 from datetime import datetime
 import os
 
-MQTT_BROKER_HOST = "localhost"
+# MQTT Broker Configuration
+# Use "localhost" for local broker, or alderaan for production
+MQTT_BROKER_HOST = "alderaan.software-engineering.ie"  # Production broker
+# MQTT_BROKER_HOST = "localhost"  # Uncomment for local testing
+
 MQTT_BROKER_PORT = 1883
 MQTT_CLIENT_ID = "web_dashboard"
-MQTT_TOPICS = ["reactor/#"]
+MQTT_TOPICS = ["reactor/#", "students/#"]  # Subscribe to multiple topic patterns
+
+# Optional authentication (uncomment if broker requires it)
+# MQTT_USERNAME = "your_username"
+# MQTT_PASSWORD = "your_password"
 
 app = Flask(__name__, static_folder='dashboard/build')
 CORS(app)
@@ -68,13 +76,17 @@ def on_mqtt_message(client, userdata, msg):
             'timestamp': timestamp
         }
         
-        if msg.topic == "reactor/telemetry":
+        # Handle telemetry from various topics
+        if "telemetry" in msg.topic or "sensors" in msg.topic:
             latest_telemetry = data
             socketio.emit('telemetry', data)
-        elif msg.topic == "reactor/alerts":
+            print(f"📊 Telemetry received: {msg.topic}")
+        elif "alerts" in msg.topic:
             socketio.emit('alert', data)
+            print(f"⚠️  Alert received: {msg.topic}")
         else:
             socketio.emit('message', data)
+            print(f"📨 Message received: {msg.topic}")
     
     except json.JSONDecodeError as e:
         print(f"JSON decode error: {e}")
@@ -90,11 +102,22 @@ def init_mqtt():
     mqtt_client.on_disconnect = on_mqtt_disconnect
     mqtt_client.on_message = on_mqtt_message
     
+    # Set authentication if defined
     try:
+        if 'MQTT_USERNAME' in globals() and 'MQTT_PASSWORD' in globals():
+            mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+            print(f"Using authentication: {MQTT_USERNAME}")
+    except:
+        pass
+    
+    try:
+        print(f"Connecting to MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
         mqtt_client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, 60)
         mqtt_client.loop_start()
+        print("MQTT client started")
     except Exception as e:
         print(f"MQTT connection failed: {e}")
+        print("Dashboard will work without live MQTT data")
 
 @app.route('/noises.mp3')
 def audio():
