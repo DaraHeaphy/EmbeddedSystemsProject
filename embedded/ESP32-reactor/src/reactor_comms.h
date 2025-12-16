@@ -1,13 +1,22 @@
 #pragma once
 
+#include "driver/uart.h"
+#include "driver/gpio.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "reactor_control.h"
 
 // Frame definitions (shared with agent)
 #define FRAME_START_BYTE       0xAA
-#define MSG_TYPE_TELEMETRY     0x01   // ESP32 -> Agent
-#define MSG_TYPE_COMMAND       0x10   // Agent  -> ESP32
+#define MSG_TYPE_TELEMETRY     0x01
+#define MSG_TYPE_COMMAND       0x10   
+
+// reactor link UART to agent
+#define REACTOR_LINK_UART_NUM      UART_NUM_2
+#define REACTOR_LINK_UART_TX_PIN   GPIO_NUM_17
+#define REACTOR_LINK_UART_RX_PIN   GPIO_NUM_16
+#define REACTOR_LINK_UART_BAUD     115200
 
 // Must be called before tasks start using the UART
 void reactor_comms_init_uart(void);
