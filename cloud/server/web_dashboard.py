@@ -677,15 +677,71 @@ def index():
            OPERATOR CONTROL PANEL - TOP SECRET - AUTHORIZED PERSONNEL ONLY
            ═══════════════════════════════════════════════════════════════ */
 
+        .operator-btn {
+            padding: 0.5rem 1rem;
+            background: linear-gradient(180deg, #8b0000 0%, #5a0000 100%);
+            border: 2px solid #aa0000;
+            color: #ffffff;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            cursor: pointer;
+            box-shadow: 0 2px 0 #2a0000;
+            transition: all 0.1s ease;
+        }
+
+        .operator-btn:hover {
+            background: linear-gradient(180deg, #aa0000 0%, #7a0000 100%);
+            box-shadow: 0 2px 0 #2a0000, 0 0 15px rgba(139, 0, 0, 0.5);
+        }
+
+        .operator-btn:active {
+            transform: translateY(1px);
+            box-shadow: 0 1px 0 #2a0000;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
         .control-panel {
             background: #0a0a0a;
             border: 4px solid #8b0000;
-            margin: 2rem auto;
-            max-width: 600px;
+            width: 90%;
+            max-width: 500px;
             position: relative;
             box-shadow:
-                0 0 20px rgba(139, 0, 0, 0.3),
+                0 0 60px rgba(139, 0, 0, 0.5),
+                0 0 100px rgba(139, 0, 0, 0.2),
                 inset 0 0 30px rgba(0, 0, 0, 0.8);
+            animation: modal-appear 0.3s ease-out;
+        }
+
+        @keyframes modal-appear {
+            from {
+                opacity: 0;
+                transform: scale(0.9) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
         }
 
         .control-panel::before {
@@ -1039,6 +1095,7 @@ def index():
     <header>
         <h1>Reactor Telemetry</h1>
         <div class="status">
+            <button id="operator-btn" class="operator-btn">Operator Panel</button>
             <span id="mqtt-status" class="status-badge disconnected">DISCONNECTED</span>
             <span style="color: #a8b2d1;">Messages: <span id="msg-count">0</span></span>
         </div>
@@ -1046,8 +1103,10 @@ def index():
     
     <main>
         <div id="content"></div>
+    </main>
 
-        <!-- OPERATOR CONTROL PANEL -->
+    <!-- OPERATOR CONTROL PANEL MODAL -->
+    <div id="modal-overlay" class="modal-overlay">
         <div class="control-panel">
             <div class="panel-header">
                 <div class="panel-title">Reactor Command Interface</div>
@@ -1086,7 +1145,7 @@ def index():
                 </div>
             </div>
         </div>
-    </main>
+    </div>
     
     <script>
         // Handle audio autoplay (browsers require user interaction)
@@ -1313,6 +1372,25 @@ def index():
         // ═══════════════════════════════════════════════════════════════
         // OPERATOR CONTROL PANEL LOGIC
         // ═══════════════════════════════════════════════════════════════
+
+        const modalOverlay = document.getElementById('modal-overlay');
+        const operatorBtn = document.getElementById('operator-btn');
+
+        operatorBtn.addEventListener('click', () => {
+            modalOverlay.classList.add('active');
+        });
+
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) {
+                modalOverlay.classList.remove('active');
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modalOverlay.classList.contains('active')) {
+                modalOverlay.classList.remove('active');
+            }
+        });
 
         const commandSelect = document.getElementById('command-select');
         const valueGroup = document.getElementById('value-group');
