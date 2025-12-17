@@ -9,6 +9,7 @@ import json
 import time
 import threading
 import sys
+import os
 
 BROKER_HOST = "alderaan.software-engineering.ie"
 BROKER_PORT = 1883
@@ -56,13 +57,13 @@ def test_system():
     
     # Create subscriber
     print("1️⃣ Creating subscriber...")
-    subscriber = mqtt.Client("system_test_sub")
+    subscriber = mqtt.Client(client_id=f"system_test_sub_{os.getpid()}")
     subscriber.on_connect = on_subscriber_connect
     subscriber.on_message = on_subscriber_message
     
     # Create publisher
     print("2️⃣ Creating publisher...")
-    publisher = mqtt.Client("system_test_pub")
+    publisher = mqtt.Client(client_id=f"system_test_pub_{os.getpid()}")
     publisher.on_connect = on_publisher_connect
     
     try:

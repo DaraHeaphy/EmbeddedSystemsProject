@@ -11,6 +11,10 @@
 #include "esp_log.h"
 #include "esp_err.h"
 
+#include "wifi.h"
+#include "ping.h"
+#include "cJSON.h"
+
 // ---------- protocol ----------
 #define FRAME_START_BYTE       0xAA
 
@@ -99,7 +103,7 @@ static void agent_send_reset_normal(void)
 {
     uint8_t payload[1] = { CMD_ID_RESET_NORMAL };
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent RESET_NORMAL\n");
+    ESP_LOGI(TAG, "sent RESET_NORMAL");
 }
 
 // (optional) other hardcoded commands you might want later:
@@ -107,7 +111,7 @@ static void agent_send_scram(void)
 {
     uint8_t payload[1] = { CMD_ID_SCRAM };
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent SCRAM\n");
+    ESP_LOGI(TAG, "sent SCRAM");
 }
 
 static void agent_send_set_power(int32_t value)
@@ -116,11 +120,41 @@ static void agent_send_set_power(int32_t value)
     payload[0] = CMD_ID_SET_POWER;
     memcpy(&payload[1], &value, sizeof(value)); // little-endian on ESP32
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent SET_POWER=%" PRId32 "\n", value);
+    ESP_LOGI(TAG, "sent SET_POWER=%" PRId32, value);
 }
 
-// Track last sample we auto-reset on, to avoid duplicates if frames repeat
-static uint32_t s_last_auto_reset_sample = UINT32_MAX;
+// ---------- MQTT command handler ----------
+static void handle_mqtt_command(const char *data, int data_len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, data_len);
+    if (!root) {
+        ESP_LOGW(TAG, "Failed to parse command JSON");
+        return;
+    }
+
+    cJSON *cmd = cJSON_GetObjectItem(root, "command");
+    if (!cJSON_IsString(cmd)) {
+        ESP_LOGW(TAG, "Missing or invalid 'command' field");
+        cJSON_Delete(root);
+        return;
+    }
+
+    const char *cmd_str = cmd->valuestring;
+
+    if (strcmp(cmd_str, "SCRAM") == 0) {
+        agent_send_scram();
+    } else if (strcmp(cmd_str, "RESET_NORMAL") == 0) {
+        agent_send_reset_normal();
+    } else if (strcmp(cmd_str, "SET_POWER") == 0) {
+        cJSON *val = cJSON_GetObjectItem(root, "value");
+        int32_t power = cJSON_IsNumber(val) ? (int32_t)val->valueint : 50;
+        agent_send_set_power(power);
+    } else {
+        ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
+    }
+
+    cJSON_Delete(root);
+}
 
 static void handle_telemetry(const uint8_t *payload, uint8_t len)
 {
@@ -142,19 +176,18 @@ static void handle_telemetry(const uint8_t *payload, uint8_t len)
     state = payload[12];
     power = payload[13];
 
-    // Plain human-readable logging (no custom protocol for logging)
-    printf("sample=%" PRIu32 " temp=%.1fC accel=%.2fg state=%s(%u) power=%u%%\n",
-           sample_id, temp_c, accel_mag, state_name(state), (unsigned)state, (unsigned)power);
+    reactor_telemetry_t t = {
+        .sample_id = sample_id,
+        .temp_c = temp_c,
+        .accel_mag = accel_mag,
+        .state = state,
+        .power = power,
+    };
+    (void)telemetry_sender_update(&t);
 
-    // ---------- NEW: hard-coded command rule ----------
-    // "Set reactor state to NORMAL every 1000 samples"
-    // This maps to sending CMD_ID_RESET_NORMAL (2).
-    if (sample_id != 0 && (sample_id % 200U) == 0U) {
-        if (s_last_auto_reset_sample != sample_id) {
-            s_last_auto_reset_sample = sample_id;
-            agent_send_reset_normal();
-        }
-    }
+    // Plain human-readable logging (no custom protocol for logging)
+    ESP_LOGI(TAG, "telemetry: sample=%" PRIu32 " temp=%.1fC accel=%.2fg state=%s(%u) power=%u%%",
+             sample_id, temp_c, accel_mag, state_name(state), (unsigned)state, (unsigned)power);
 
     // If you ever want additional logic, e.g. SCRAM on extreme temp, you'd do it here:
     // if (temp_c > 95.0f) agent_send_scram();
@@ -274,6 +307,29 @@ static void reactor_rx_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "agent booting");
+
+    // Initialize WiFi and connect
+    esp_err_t wifi_ret = wifi_init_sta();
+    if (wifi_ret == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi connected, starting MQTT");
+
+        // Register command handler before starting MQTT
+        set_mqtt_cmd_callback(handle_mqtt_command);
+
+        // MQTT Configuration
+        telemetry_config_t telem_config = {
+            .broker_uri = "mqtt://alderaan.software-engineering.ie:1883",
+            .client_id = "reactor_bridge_agent",
+            .pub_topic = "reactor/sensors",
+            .cmd_topic = "reactor/commands",  // Subscribe for commands
+            .interval_ms = 1000,  // Send every 1 second
+            .count = 0,           // 0 = send forever
+        };
+        start_telemetry_sender(&telem_config);
+    } else {
+        ESP_LOGW(TAG, "WiFi connection failed, skipping MQTT");
+    }
+
     init_uart_link();
 
     xTaskCreate(reactor_rx_task, "reactor_rx", 4096, NULL, 5, NULL);
