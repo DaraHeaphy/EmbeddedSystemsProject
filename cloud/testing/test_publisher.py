@@ -1,66 +1,48 @@
 #!/usr/bin/env python3
-"""
-MQTT Publisher - Simulates your ESP32/C code publishing data
-Use this to test that your Python subscriber is working correctly
-"""
 
 import paho.mqtt.client as mqtt
 import json
 import time
 import sys
-from datetime import datetime
+import math
 import random
 import os
+from datetime import datetime
 
-# Broker configuration
 BROKER_HOST = "alderaan.software-engineering.ie"
 BROKER_PORT = 1883
+TOPIC = "reactor/sensors"
+INTERVAL = 2
 
-# Set these if authentication is required
-USERNAME = None  # Set to your username if needed
-PASSWORD = None  # Set to your password if needed
-
-# Publishing configuration
-PUBLISH_TOPIC = "reactor/sensors"  # CUSTOMIZE THIS!
-PUBLISH_INTERVAL = 2  # seconds between messages
 
 def on_connect(client, userdata, flags, rc):
-    """Callback when connected"""
     if rc == 0:
-        print("✅ Connected to broker")
+        print("connected")
         userdata['connected'] = True
     else:
-        print(f"❌ Connection failed with code {rc}")
+        print(f"connection failed: {rc}")
         sys.exit(1)
 
-def on_publish(client, userdata, mid):
-    """Callback when message is published"""
-    userdata['message_count'] += 1
 
-def generate_sensor_data(sample_id):
-    """Generate fake sensor data (simulating ESP32)"""
-    import math
-    
+def on_publish(client, userdata, mid):
+    userdata['count'] += 1
+
+
+def generate_data(sample_id):
     temp = round(20.0 + random.uniform(-5, 15), 2)
     accel_x = round(random.uniform(-0.5, 0.5), 3)
     accel_y = round(random.uniform(-0.5, 0.5), 3)
     accel_z = round(9.81 + random.uniform(-0.2, 0.2), 3)
-    
-    # Calculate acceleration magnitude
     accel_mag = round(math.sqrt(accel_x**2 + accel_y**2 + accel_z**2), 3)
-    
-    # Generate power
-    power = int(50 + random.uniform(-20, 30))
-    power = max(0, min(100, power))  # Clamp between 0-100
-    
-    # Determine state based on temperature
+    power = max(0, min(100, int(50 + random.uniform(-20, 30))))
+
     if temp > 80:
         state = "SCRAM"
     elif temp > 60:
         state = "WARNING"
     else:
         state = "NORMAL"
-    
+
     return {
         "temp": temp,
         "accel_x": accel_x,
@@ -74,93 +56,47 @@ def generate_sensor_data(sample_id):
         "device_id": "test_publisher"
     }
 
+
 def main():
-    print("=" * 70)
-    print("🧪 MQTT Publisher Test (Simulating ESP32/C code)")
-    print("=" * 70)
-    print()
-    print(f"Broker: {BROKER_HOST}:{BROKER_PORT}")
-    print(f"Topic: {PUBLISH_TOPIC}")
-    print(f"Interval: {PUBLISH_INTERVAL}s")
-    print()
-    
-    # Create client
-    userdata = {'connected': False, 'message_count': 0}
+    print(f"publisher - {BROKER_HOST}:{BROKER_PORT}")
+    print(f"topic: {TOPIC}, interval: {INTERVAL}s")
+
+    userdata = {'connected': False, 'count': 0}
     client = mqtt.Client(client_id=f"test_publisher_{os.getpid()}")
     client.user_data_set(userdata)
-    
-    if USERNAME and PASSWORD:
-        client.username_pw_set(USERNAME, PASSWORD)
-        print(f"🔐 Using authentication: {USERNAME}")
-    
     client.on_connect = on_connect
     client.on_publish = on_publish
-    
+
     try:
-        # Connect
-        print("🔌 Connecting...")
         client.connect(BROKER_HOST, BROKER_PORT, 60)
         client.loop_start()
-        
-        # Wait for connection
-        timeout = 10
-        start_time = time.time()
+
+        start = time.time()
         while not userdata['connected']:
-            if time.time() - start_time > timeout:
-                print("❌ Connection timeout")
+            if time.time() - start > 10:
+                print("connection timeout")
                 sys.exit(1)
             time.sleep(0.1)
-        
-        print()
-        print("✅ Connected! Publishing messages...")
-        print("   (Make sure test_subscriber.py is running in another terminal)")
-        print()
-        print("Press Ctrl+C to stop")
-        print("=" * 70)
-        print()
-        
-        # Publish messages continuously
+
+        print("publishing... (ctrl+c to stop)")
+
         sample_id = 0
         while True:
-            # Generate sensor data
-            data = generate_sensor_data(sample_id)
-            json_data = json.dumps(data)
+            data = generate_data(sample_id)
+            client.publish(TOPIC, json.dumps(data), qos=1)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] #{sample_id} temp={data['temp']} state={data['state']}")
             sample_id += 1
-            
-            # Publish
-            result = client.publish(PUBLISH_TOPIC, json_data, qos=1)
-            
-            if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                timestamp = datetime.now().strftime('%H:%M:%S')
-                print(f"📤 [{timestamp}] Published #{userdata['message_count']+1}")
-                print(f"   Topic: {PUBLISH_TOPIC}")
-                print(f"   Data: {json_data}")
-                print()
-            else:
-                print(f"❌ Failed to publish")
-            
-            # Wait before next message
-            time.sleep(PUBLISH_INTERVAL)
-            
+            time.sleep(INTERVAL)
+
     except KeyboardInterrupt:
-        print()
-        print("=" * 70)
-        print("👋 Shutting down publisher...")
-        print(f"   Total messages published: {userdata['message_count']}")
-        print("=" * 70)
+        print(f"\nstopped - published {userdata['count']} messages")
         client.loop_stop()
         client.disconnect()
-        
-    except ConnectionRefusedError:
-        print()
-        print("❌ Connection refused!")
-        print("   Run test_connectivity.py first")
-        sys.exit(1)
-        
+
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
-
