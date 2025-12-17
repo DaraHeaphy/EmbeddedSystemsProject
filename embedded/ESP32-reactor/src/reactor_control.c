@@ -4,222 +4,171 @@
 #include "driver/adc.h"
 #include "esp_log.h"
 
-static const char *TAG = "reactor_ctrl";
+static const char *TAG = "control";
 
-#define REACTOR_LED_GPIO   GPIO_NUM_2
+#define LED_GPIO           GPIO_NUM_2
+#define LM35_ADC_CHANNEL   ADC1_CHANNEL_0
+#define LM35_ADC_WIDTH     ADC_WIDTH_BIT_12
+#define LM35_ADC_ATTEN     ADC_ATTEN_DB_11
+#define ADC_REF_V          3.3f
+#define ADC_MAX            4095.0f
+#define LM35_CAL_FACTOR    (18.0f / 6.4f)
 
+static float s_temp_warning = TEMP_WARNING;
+static float s_temp_critical = TEMP_CRITICAL;
+static uint8_t s_power = 50;
+static reactor_state_t s_state = REACTOR_STATE_NORMAL;
 
-// GPIO36 on ESP32 = ADC1_CHANNEL_0
-#define LM35_ADC_CHANNEL       ADC1_CHANNEL_0
-#define LM35_ADC_WIDTH         ADC_WIDTH_BIT_12       // 0..4095
-#define LM35_ADC_ATTEN         ADC_ATTEN_DB_11        // full-scale ~3.3V
-
-// These match your Arduino sketch
-#define LM35_ADC_REF_V         3.3f
-#define LM35_ADC_RESOLUTION    4095.0f
-
-// Calibration factor from your Arduino code: tempC = tempC_raw * (18.0 / 6.4)
-#define LM35_CALIBRATION_FACTOR   (18.0f / 6.4f)
-
-// Global reactor config
-static float g_temp_warning_threshold  = TEMP_WARNING_DEFAULT;
-static float g_temp_critical_threshold = TEMP_CRITICAL_DEFAULT;
-
-// Simulated “reactor power” (0–100%)
-static uint8_t         g_reactor_power  = 50;
-static reactor_state_t g_reactor_state  = REACTOR_STATE_NORMAL;
-
-static void reactor_led_init(void)
+static void led_init(void)
 {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << REACTOR_LED_GPIO,
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
     };
-    gpio_config(&io_conf);
+    gpio_config(&cfg);
 }
 
-static void reactor_led_update(reactor_state_t state)
+static void led_update(reactor_state_t state)
 {
+    static bool blink = false;
+
     switch (state) {
-        case REACTOR_STATE_NORMAL:
-            gpio_set_level(REACTOR_LED_GPIO, 0);
-            break;
-
-        case REACTOR_STATE_WARNING: {
-            static bool level = false;
-            level = !level;
-            gpio_set_level(REACTOR_LED_GPIO, level ? 1 : 0);
-            break;
-        }
-
-        case REACTOR_STATE_SCRAM:
-            gpio_set_level(REACTOR_LED_GPIO, 1);
-            break;
-
-        default:
-            gpio_set_level(REACTOR_LED_GPIO, 0);
-            break;
+    case REACTOR_STATE_NORMAL:
+        gpio_set_level(LED_GPIO, 0);
+        break;
+    case REACTOR_STATE_WARNING:
+        blink = !blink;
+        gpio_set_level(LED_GPIO, blink);
+        break;
+    case REACTOR_STATE_SCRAM:
+        gpio_set_level(LED_GPIO, 1);
+        break;
     }
 }
 
 static void lm35_init(void)
 {
-    // Legacy ADC1 API (ESP-IDF 4.x style). For ESP32 this is fine.
     adc1_config_width(LM35_ADC_WIDTH);
     adc1_config_channel_atten(LM35_ADC_CHANNEL, LM35_ADC_ATTEN);
-
-    ESP_LOGI(TAG, "LM35 ADC initialised on ADC1_CH0 (GPIO36)");
+    ESP_LOGI(TAG, "lm35 ready on adc1 ch0");
 }
 
-static bool lm35_read_temperature(float *out_temp_c)
+static bool lm35_read(float *temp)
 {
-    if (!out_temp_c) {
-        return false;
-    }
-
-    // Raw 12-bit read (0..4095)
     int raw = adc1_get_raw(LM35_ADC_CHANNEL);
     if (raw < 0) {
-        ESP_LOGE(TAG, "adc1_get_raw failed (raw=%d)", raw);
         return false;
     }
 
-    float voltage   = ((float)raw * LM35_ADC_REF_V) / LM35_ADC_RESOLUTION;
-    float tempC_raw = voltage * 100.0f;                  // 10 mV/°C -> 100 * V
-
-    // Apply the same calibration factor as your Arduino sketch
-    float tempC     = tempC_raw * LM35_CALIBRATION_FACTOR;
-
-    *out_temp_c = tempC;
+    float voltage = (raw * ADC_REF_V) / ADC_MAX;
+    float temp_raw = voltage * 100.0f;
+    *temp = temp_raw * LM35_CAL_FACTOR;
     return true;
 }
 
-static void reactor_update_state(float temp_c, float accel_mag)
+static void update_state(float temp, float accel)
 {
-    bool major_quake = accel_mag > 2.0f;
-    bool minor_quake = accel_mag > 0.8f;
+    bool major_quake = accel > 2.0f;
+    bool minor_quake = accel > 0.8f;
 
-    switch (g_reactor_state) {
-        case REACTOR_STATE_NORMAL:
-            if (temp_c >= g_temp_critical_threshold || major_quake) {
-                g_reactor_state = REACTOR_STATE_SCRAM;
-                g_reactor_power = 0;
-                ESP_LOGW(TAG, "NORMAL -> SCRAM (temp=%.1f, accel=%.2f)",
-                         temp_c, accel_mag);
-            } else if (temp_c >= g_temp_warning_threshold || minor_quake) {
-                g_reactor_state = REACTOR_STATE_WARNING;
-                ESP_LOGW(TAG, "NORMAL -> WARNING (temp=%.1f, accel=%.2f)",
-                         temp_c, accel_mag);
-            }
-            break;
+    switch (s_state) {
+    case REACTOR_STATE_NORMAL:
+        if (temp >= s_temp_critical || major_quake) {
+            s_state = REACTOR_STATE_SCRAM;
+            s_power = 0;
+            ESP_LOGW(TAG, "NORMAL -> SCRAM (temp=%.1f accel=%.2f)", temp, accel);
+        } else if (temp >= s_temp_warning || minor_quake) {
+            s_state = REACTOR_STATE_WARNING;
+            ESP_LOGW(TAG, "NORMAL -> WARNING (temp=%.1f accel=%.2f)", temp, accel);
+        }
+        break;
 
-        case REACTOR_STATE_WARNING:
-            if (temp_c >= g_temp_critical_threshold || major_quake) {
-                g_reactor_state = REACTOR_STATE_SCRAM;
-                g_reactor_power = 0;
-                ESP_LOGW(TAG, "WARNING -> SCRAM (temp=%.1f, accel=%.2f)",
-                         temp_c, accel_mag);
-            } else if (temp_c < (g_temp_warning_threshold - 2.0f)) {
-                g_reactor_state = REACTOR_STATE_NORMAL;
-                ESP_LOGI(TAG, "WARNING -> NORMAL (temp=%.1f, accel=%.2f)",
-                         temp_c, accel_mag);
-            }
-            break;
+    case REACTOR_STATE_WARNING:
+        if (temp >= s_temp_critical || major_quake) {
+            s_state = REACTOR_STATE_SCRAM;
+            s_power = 0;
+            ESP_LOGW(TAG, "WARNING -> SCRAM (temp=%.1f accel=%.2f)", temp, accel);
+        } else if (temp < (s_temp_warning - 2.0f)) {
+            s_state = REACTOR_STATE_NORMAL;
+            ESP_LOGI(TAG, "WARNING -> NORMAL (temp=%.1f)", temp);
+        }
+        break;
 
-        case REACTOR_STATE_SCRAM:
-            // Stay in SCRAM until explicitly reset
-            g_reactor_power = 0;
-            break;
-
-        default:
-            g_reactor_state = REACTOR_STATE_NORMAL;
-            break;
+    case REACTOR_STATE_SCRAM:
+        // stays in scram until reset command
+        s_power = 0;
+        break;
     }
 }
 
-// Handle incoming commands from comms task
 void reactor_control_handle_command(const reactor_command_t *cmd)
 {
-    if (!cmd) {
-        return;
-    }
+    if (!cmd) return;
 
     switch (cmd->type) {
-        case CMD_SCRAM:
-            ESP_LOGW(TAG, "CMD_SCRAM received");
-            g_reactor_state = REACTOR_STATE_SCRAM;
-            g_reactor_power = 0;
-            break;
+    case CMD_SCRAM:
+        ESP_LOGW(TAG, "cmd: SCRAM");
+        s_state = REACTOR_STATE_SCRAM;
+        s_power = 0;
+        break;
 
-        case CMD_RESET_NORMAL:
-            ESP_LOGI(TAG, "CMD_RESET_NORMAL received");
-            g_reactor_state = REACTOR_STATE_NORMAL;
-            g_reactor_power = 50;
-            break;
+    case CMD_RESET_NORMAL:
+        ESP_LOGI(TAG, "cmd: RESET_NORMAL");
+        s_state = REACTOR_STATE_NORMAL;
+        s_power = 50;
+        break;
 
-        case CMD_SET_POWER: {
-            int32_t power = cmd->value;
-            if (power < 0)   power = 0;
-            if (power > 100) power = 100;
-            g_reactor_power = (uint8_t)power;
-            ESP_LOGI(TAG, "CMD_SET_POWER -> %u%%", (unsigned)g_reactor_power);
-            break;
-        }
+    case CMD_SET_POWER: {
+        int32_t p = cmd->value;
+        if (p < 0) p = 0;
+        if (p > 100) p = 100;
+        s_power = (uint8_t)p;
+        ESP_LOGI(TAG, "cmd: SET_POWER %u%%", s_power);
+        break;
+    }
 
-        case CMD_NONE:
-        default:
-            break;
+    default:
+        break;
     }
 }
 
 void reactor_control_init(void)
 {
-    reactor_led_init();
+    led_init();
     lm35_init();
-
-    g_temp_warning_threshold  = TEMP_WARNING_DEFAULT;
-    g_temp_critical_threshold = TEMP_CRITICAL_DEFAULT;
-    g_reactor_state = REACTOR_STATE_NORMAL;
-    g_reactor_power = 50;
+    s_state = REACTOR_STATE_NORMAL;
+    s_power = 50;
 }
 
-void reactor_control_step(uint32_t sample_id,
-                          reactor_telemetry_t *out_telemetry)
+void reactor_control_step(uint32_t sample_id, reactor_telemetry_t *out)
 {
-    float temp_c    = 0.0f;
-    float accel_mag = 0.2f;
+    float temp = 0.0f;
+    float accel = 0.2f;  // placeholder, no accelerometer connected
 
-    // read temp from lm35
-    bool ok = lm35_read_temperature(&temp_c);
-    if (!ok) {
-        // Sensor failure -> fail safe
-        ESP_LOGE(TAG, "LM35 read failed, forcing SCRAM");
-        g_reactor_state = REACTOR_STATE_SCRAM;
-        g_reactor_power = 0;
+    if (!lm35_read(&temp)) {
+        ESP_LOGE(TAG, "lm35 read failed, forcing scram");
+        s_state = REACTOR_STATE_SCRAM;
+        s_power = 0;
     }
 
-    // Use real temp_c to drive state machine
-    reactor_update_state(temp_c, accel_mag);
-    reactor_led_update(g_reactor_state);
+    update_state(temp, accel);
+    led_update(s_state);
 
-    if (out_telemetry) {
-        out_telemetry->sample_id     = sample_id;
-        out_telemetry->temperature_c = temp_c;
-        out_telemetry->accel_mag     = accel_mag;
-        out_telemetry->state         = g_reactor_state;
-        out_telemetry->power_percent = g_reactor_power;
+    if (out) {
+        out->sample_id = sample_id;
+        out->temperature_c = temp;
+        out->accel_mag = accel;
+        out->state = s_state;
+        out->power_percent = s_power;
     }
 }
 
 reactor_state_t reactor_control_get_state(void)
 {
-    return g_reactor_state;
+    return s_state;
 }
 
 uint8_t reactor_control_get_power(void)
 {
-    return g_reactor_power;
+    return s_power;
 }
