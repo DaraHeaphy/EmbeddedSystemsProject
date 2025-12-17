@@ -2,12 +2,13 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <math.h>
+#include <errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
-#include "esp_random.h"
+#include "esp_mac.h"
 #include "mqtt_client.h"
 
 static const char *TAG = "telemetry_sender";
@@ -19,15 +20,7 @@ static volatile bool s_mqtt_connected = false;
 static SemaphoreHandle_t s_mqtt_connected_sem = NULL;
 static mqtt_cmd_callback_t s_cmd_callback = NULL;
 static char s_cmd_topic[64] = {0};
-
-// Telemetry state for generating fake data
-typedef struct {
-    uint32_t sample_id;
-    float temperature;
-    float accel_mag;
-    uint8_t state;       // 0=NORMAL, 1=WARNING, 2=SCRAM
-    uint8_t power;
-} fake_telemetry_t;
+static QueueHandle_t s_telemetry_queue = NULL;
 
 static const char *state_to_string(uint8_t state)
 {
@@ -39,57 +32,84 @@ static const char *state_to_string(uint8_t state)
     }
 }
 
+static void build_unique_client_id(char *out, size_t out_len, const char *base)
+{
+    if (out == NULL || out_len == 0) {
+        return;
+    }
+
+    if (base == NULL || base[0] == '\0') {
+        base = "esp32_agent";
+    }
+
+    uint8_t mac[6] = {0};
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to read WiFi STA MAC for client_id suffix: %s", esp_err_to_name(err));
+        snprintf(out, out_len, "%s", base);
+        return;
+    }
+
+    int written = snprintf(out, out_len, "%s_%02X%02X%02X%02X%02X%02X",
+                           base, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    if (written < 0 || (size_t)written >= out_len) {
+        ESP_LOGW(TAG, "client_id truncated; increase buffer or shorten base id");
+        snprintf(out, out_len, "%s", base);
+    }
+}
+
 void set_mqtt_cmd_callback(mqtt_cmd_callback_t cb)
 {
     s_cmd_callback = cb;
 }
 
-// Generate realistic-looking fake telemetry
-static void generate_fake_telemetry(fake_telemetry_t *t)
+esp_err_t telemetry_sender_update(const reactor_telemetry_t *telemetry)
 {
-    static uint32_t s_sample_counter = 0;
-
-    t->sample_id = s_sample_counter++;
-
-    // Temperature: oscillates around 45C with some noise (range ~20-80C)
-    float base_temp = 45.0f + 20.0f * sinf((float)t->sample_id * 0.05f);
-    float noise = ((float)(esp_random() % 1000) / 1000.0f - 0.5f) * 5.0f;
-    t->temperature = base_temp + noise;
-
-    // Acceleration: mostly around 9.8 m/s^2 with occasional spikes
-    t->accel_mag = 9.81f + ((float)(esp_random() % 100) / 100.0f - 0.5f) * 2.0f;
-    if (esp_random() % 20 == 0) {
-        // Occasional spike
-        t->accel_mag += (float)(esp_random() % 500) / 100.0f;
+    if (telemetry == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_telemetry_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    // Power: slowly ramps up and down (0-100%)
-    t->power = (uint8_t)(50 + 45 * sinf((float)t->sample_id * 0.02f));
+    return (xQueueOverwrite(s_telemetry_queue, telemetry) == pdPASS) ? ESP_OK : ESP_FAIL;
+}
 
-    // State: mostly NORMAL, occasionally WARNING, rarely SCRAM
-    uint32_t state_rand = esp_random() % 100;
-    if (state_rand < 85) {
-        t->state = 0;  // NORMAL
-    } else if (state_rand < 97) {
-        t->state = 1;  // WARNING
-    } else {
-        t->state = 2;  // SCRAM
-    }
-
-    // If temperature is extreme, more likely to be in WARNING/SCRAM
-    if (t->temperature > 70.0f) {
-        t->state = (t->temperature > 75.0f) ? 2 : 1;
+static const char *mqtt_event_name(int32_t event_id)
+{
+    switch ((esp_mqtt_event_id_t)event_id) {
+        case MQTT_EVENT_BEFORE_CONNECT: return "BEFORE_CONNECT";
+        case MQTT_EVENT_CONNECTED: return "CONNECTED";
+        case MQTT_EVENT_DISCONNECTED: return "DISCONNECTED";
+        case MQTT_EVENT_SUBSCRIBED: return "SUBSCRIBED";
+        case MQTT_EVENT_UNSUBSCRIBED: return "UNSUBSCRIBED";
+        case MQTT_EVENT_PUBLISHED: return "PUBLISHED";
+        case MQTT_EVENT_DATA: return "DATA";
+        case MQTT_EVENT_ERROR: return "ERROR";
+        case MQTT_EVENT_DELETED: return "DELETED";
+        default: return "UNKNOWN";
     }
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                int32_t event_id, void *event_data)
 {
+    (void)handler_args;
+    (void)base;
     esp_mqtt_event_handle_t event = event_data;
+    if (event == NULL && (esp_mqtt_event_id_t)event_id != MQTT_EVENT_BEFORE_CONNECT) {
+        ESP_LOGE(TAG, "[MQTT] event=%s but event_data is NULL", mqtt_event_name(event_id));
+        return;
+    }
 
     switch ((esp_mqtt_event_id_t)event_id) {
+        case MQTT_EVENT_BEFORE_CONNECT:
+            ESP_LOGI(TAG, "[MQTT] event=%s", mqtt_event_name(event_id));
+            break;
+
         case MQTT_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "MQTT connected to broker");
+            ESP_LOGI(TAG, "[MQTT] event=%s", mqtt_event_name(event_id));
+            ESP_LOGI(TAG, "[MQTT] connected");
             s_mqtt_connected = true;
             if (s_mqtt_connected_sem) {
                 xSemaphoreGive(s_mqtt_connected_sem);
@@ -97,35 +117,58 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             // Subscribe to command topic if configured
             if (s_cmd_topic[0] != '\0') {
                 int msg_id = esp_mqtt_client_subscribe(s_mqtt_client, s_cmd_topic, 1);
-                ESP_LOGI(TAG, "Subscribed to %s (msg_id=%d)", s_cmd_topic, msg_id);
+                if (msg_id >= 0) {
+                    ESP_LOGI(TAG, "[MQTT] subscribe queued: topic=%s qos=1 msg_id=%d", s_cmd_topic, msg_id);
+                } else {
+                    ESP_LOGE(TAG, "[MQTT] subscribe failed: topic=%s", s_cmd_topic);
+                }
             }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
-            ESP_LOGW(TAG, "MQTT disconnected from broker");
+            ESP_LOGW(TAG, "[MQTT] event=%s", mqtt_event_name(event_id));
+            ESP_LOGW(TAG, "[MQTT] disconnected");
             s_mqtt_connected = false;
             break;
 
+        case MQTT_EVENT_SUBSCRIBED:
+            ESP_LOGI(TAG, "[MQTT] event=%s msg_id=%d", mqtt_event_name(event_id), event ? event->msg_id : -1);
+            break;
+
+        case MQTT_EVENT_UNSUBSCRIBED:
+            ESP_LOGI(TAG, "[MQTT] event=%s msg_id=%d", mqtt_event_name(event_id), event ? event->msg_id : -1);
+            break;
+
         case MQTT_EVENT_PUBLISHED:
-            ESP_LOGD(TAG, "MQTT message published, msg_id=%d", event->msg_id);
+            ESP_LOGI(TAG, "[MQTT] event=%s msg_id=%d", mqtt_event_name(event_id), event ? event->msg_id : -1);
             break;
 
         case MQTT_EVENT_DATA:
-            ESP_LOGI(TAG, "MQTT data received on topic %.*s", event->topic_len, event->topic);
+            ESP_LOGI(TAG, "[MQTT] event=%s topic=%.*s bytes=%d", mqtt_event_name(event_id),
+                     event->topic_len, event->topic, event->data_len);
             if (s_cmd_callback && event->data_len > 0) {
                 s_cmd_callback(event->data, event->data_len);
             }
             break;
 
         case MQTT_EVENT_ERROR:
-            ESP_LOGE(TAG, "MQTT error");
-            if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
-                ESP_LOGE(TAG, "TCP transport error");
+            ESP_LOGE(TAG, "[MQTT] event=%s", mqtt_event_name(event_id));
+            if (event && event->error_handle) {
+                const esp_mqtt_error_codes_t *e = event->error_handle;
+                ESP_LOGE(TAG, "[MQTT] error_type=%d connect_rc=%d tls_last_err=%d tls_stack_err=%d sock_errno=%d (%s)",
+                         (int)e->error_type,
+                         (int)e->connect_return_code,
+                         (int)e->esp_tls_last_esp_err,
+                         (int)e->esp_tls_stack_err,
+                         (int)e->esp_transport_sock_errno,
+                         strerror(e->esp_transport_sock_errno));
+            } else {
+                ESP_LOGE(TAG, "[MQTT] error without details (null error_handle)");
             }
             break;
 
         default:
-            ESP_LOGD(TAG, "MQTT event: %d", (int)event_id);
+            ESP_LOGI(TAG, "[MQTT] event=%s(%d)", mqtt_event_name(event_id), (int)event_id);
             break;
     }
 }
@@ -141,12 +184,17 @@ typedef struct {
 static void telemetry_sender_task(void *arg)
 {
     sender_task_params_t *params = (sender_task_params_t *)arg;
-    fake_telemetry_t telemetry;
     uint32_t sent = 0;
     char json_buf[256];
+    uint32_t last_published_sample_id = UINT32_MAX;
+    bool warned_no_telemetry = false;
 
-    ESP_LOGI(TAG, "Telemetry sender started: broker=%s, topic=%s, interval=%lums",
-             params->broker_uri, params->pub_topic, (unsigned long)params->interval_ms);
+    ESP_LOGI(TAG, "[1/6] telemetry task start");
+    ESP_LOGI(TAG, "[2/6] broker=%s", params->broker_uri);
+    ESP_LOGI(TAG, "[3/6] client_id=%s", params->client_id);
+    ESP_LOGI(TAG, "[4/6] pub_topic=%s interval=%lums count=%lu qos=1",
+             params->pub_topic, (unsigned long)params->interval_ms, (unsigned long)params->count);
+    ESP_LOGI(TAG, "[5/6] cmd_topic=%s", (s_cmd_topic[0] != '\0') ? s_cmd_topic : "(disabled)");
 
     // Initialize MQTT client
     esp_mqtt_client_config_t mqtt_cfg = {
@@ -161,10 +209,14 @@ static void telemetry_sender_task(void *arg)
     }
 
     esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-    esp_mqtt_client_start(s_mqtt_client);
+    esp_err_t start_err = esp_mqtt_client_start(s_mqtt_client);
+    if (start_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start MQTT client: %s", esp_err_to_name(start_err));
+        goto cleanup;
+    }
 
     // Wait for connection (with timeout)
-    ESP_LOGI(TAG, "Waiting for MQTT connection...");
+    ESP_LOGI(TAG, "[6/6] waiting for MQTT_EVENT_CONNECTED (timeout=10s)...");
     if (xSemaphoreTake(s_mqtt_connected_sem, pdMS_TO_TICKS(10000)) != pdTRUE) {
         ESP_LOGE(TAG, "MQTT connection timeout");
         goto cleanup;
@@ -179,13 +231,27 @@ static void telemetry_sender_task(void *arg)
             continue;
         }
 
-        generate_fake_telemetry(&telemetry);
+        reactor_telemetry_t telemetry;
+        if (s_telemetry_queue == NULL ||
+            xQueuePeek(s_telemetry_queue, &telemetry, 0) != pdTRUE) {
+            if (!warned_no_telemetry) {
+                ESP_LOGW(TAG, "No reactor telemetry received yet; waiting for UART frames...");
+                warned_no_telemetry = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(params->interval_ms));
+            continue;
+        }
+        warned_no_telemetry = false;
+        if (telemetry.sample_id == last_published_sample_id) {
+            vTaskDelay(pdMS_TO_TICKS(params->interval_ms));
+            continue;
+        }
 
         // Format JSON payload
         snprintf(json_buf, sizeof(json_buf),
                  "{\"sample_id\":%lu,\"temp\":%.2f,\"accel_mag\":%.3f,\"state\":\"%s\",\"power\":%u}",
                  (unsigned long)telemetry.sample_id,
-                 telemetry.temperature,
+                 telemetry.temp_c,
                  telemetry.accel_mag,
                  state_to_string(telemetry.state),
                  (unsigned)telemetry.power);
@@ -194,16 +260,18 @@ static void telemetry_sender_task(void *arg)
                                              json_buf, 0, 1, 0);
 
         if (msg_id >= 0) {
-            ESP_LOGI(TAG, "Published to %s: sample=%lu temp=%.1f state=%s power=%u%%",
+            ESP_LOGI(TAG, "Publish queued: topic=%s msg_id=%d sample=%lu temp=%.1f state=%s power=%u%%",
                      params->pub_topic,
+                     msg_id,
                      (unsigned long)telemetry.sample_id,
-                     telemetry.temperature,
+                     telemetry.temp_c,
                      state_to_string(telemetry.state),
                      (unsigned)telemetry.power);
         } else {
-            ESP_LOGW(TAG, "Failed to publish message");
+            ESP_LOGE(TAG, "Publish failed (msg_id=%d). Check MQTT_EVENT_ERROR logs.", msg_id);
         }
 
+        last_published_sample_id = telemetry.sample_id;
         sent++;
         if (params->count > 0 && sent >= params->count) {
             ESP_LOGI(TAG, "Sent %lu telemetry packets, stopping", (unsigned long)sent);
@@ -247,6 +315,16 @@ esp_err_t start_telemetry_sender(const telemetry_config_t *config)
         }
     }
 
+    if (s_telemetry_queue == NULL) {
+        s_telemetry_queue = xQueueCreate(1, sizeof(reactor_telemetry_t));
+        if (s_telemetry_queue == NULL) {
+            ESP_LOGE(TAG, "Failed to create telemetry queue");
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        (void)xQueueReset(s_telemetry_queue);
+    }
+
     sender_task_params_t *params = malloc(sizeof(sender_task_params_t));
     if (params == NULL) {
         ESP_LOGE(TAG, "Failed to allocate task params");
@@ -256,9 +334,7 @@ esp_err_t start_telemetry_sender(const telemetry_config_t *config)
     strncpy(params->broker_uri, config->broker_uri, sizeof(params->broker_uri) - 1);
     params->broker_uri[sizeof(params->broker_uri) - 1] = '\0';
 
-    strncpy(params->client_id, config->client_id ? config->client_id : "esp32_agent",
-            sizeof(params->client_id) - 1);
-    params->client_id[sizeof(params->client_id) - 1] = '\0';
+    build_unique_client_id(params->client_id, sizeof(params->client_id), config->client_id);
 
     strncpy(params->pub_topic, config->pub_topic, sizeof(params->pub_topic) - 1);
     params->pub_topic[sizeof(params->pub_topic) - 1] = '\0';
@@ -276,6 +352,8 @@ esp_err_t start_telemetry_sender(const telemetry_config_t *config)
 
     s_stop_requested = false;
     s_mqtt_connected = false;
+    // Ensure the "connected" semaphore starts empty so the task truly waits for MQTT_EVENT_CONNECTED
+    (void)xSemaphoreTake(s_mqtt_connected_sem, 0);
 
     BaseType_t ret = xTaskCreate(
         telemetry_sender_task,

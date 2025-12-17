@@ -7,6 +7,7 @@ This script will verify if you can reach the broker and if authentication is req
 import paho.mqtt.client as mqtt
 import time
 import sys
+import os
 
 BROKER_HOST = "alderaan.software-engineering.ie"
 BROKER_PORT = 1883
@@ -51,7 +52,7 @@ def test_anonymous_connection():
     
     userdata = {'connected': False, 'error_code': None}
     
-    client = mqtt.Client("connectivity_tester")
+    client = mqtt.Client(client_id=f"connectivity_tester_{os.getpid()}")
     client.user_data_set(userdata)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -126,7 +127,7 @@ def test_with_credentials(username, password):
     
     userdata = {'connected': False, 'error_code': None}
     
-    client = mqtt.Client("connectivity_tester_auth")
+    client = mqtt.Client(client_id=f"connectivity_tester_auth_{os.getpid()}")
     client.user_data_set(userdata)
     client.username_pw_set(username, password)
     client.on_connect = on_connect

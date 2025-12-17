@@ -12,6 +12,7 @@ import json
 import threading
 from datetime import datetime
 import os
+import socket
 
 # MQTT Broker Configuration
 # Use "localhost" for local broker, or alderaan for production
@@ -19,12 +20,22 @@ MQTT_BROKER_HOST = "alderaan.software-engineering.ie"  # Production broker
 # MQTT_BROKER_HOST = "localhost"  # Uncomment for local testing
 
 MQTT_BROKER_PORT = 1883
-MQTT_CLIENT_ID = "web_dashboard"
+# NOTE: MQTT client IDs must be unique per broker connection. If multiple dashboard
+# instances use the same ID, the broker will repeatedly kick the old connection,
+# causing the UI to flap between CONNECTED/DISCONNECTED.
+MQTT_CLIENT_ID_EXACT = (os.getenv("MQTT_CLIENT_ID_EXACT") or "").strip()
+if MQTT_CLIENT_ID_EXACT:
+    MQTT_CLIENT_ID = MQTT_CLIENT_ID_EXACT
+else:
+    MQTT_CLIENT_ID_PREFIX = (os.getenv("MQTT_CLIENT_ID") or "web_dashboard").strip() or "web_dashboard"
+    MQTT_CLIENT_ID = f"{MQTT_CLIENT_ID_PREFIX}_{socket.gethostname()}_{os.getpid()}"
 MQTT_TOPICS = ["reactor/#", "students/#"]  # Subscribe to multiple topic patterns
 
 # Optional authentication (uncomment if broker requires it)
 # MQTT_USERNAME = "your_username"
 # MQTT_PASSWORD = "your_password"
+
+MQTT_DEBUG = os.getenv("MQTT_DEBUG", "").lower() in ("1", "true", "yes", "on")
 
 app = Flask(__name__, static_folder='dashboard/build')
 CORS(app)
@@ -41,24 +52,36 @@ stats = {
     "uptime": 0
 }
 
-def on_mqtt_connect(client, userdata, flags, rc):
+def on_mqtt_connect(client, userdata, flags, rc, properties=None):
     global mqtt_connected
-    if rc == 0:
+    rc_int = int(rc) if not isinstance(rc, int) else rc
+    if rc_int == 0:
         mqtt_connected = True
         stats["connection_time"] = datetime.now().isoformat()
+        print(f"[MQTT] Connected client_id={MQTT_CLIENT_ID} flags={flags}")
         
         for topic in MQTT_TOPICS:
             client.subscribe(topic)
         
-        socketio.emit('mqtt_status', {'connected': True})
+        socketio.emit('mqtt_status', {'connected': True, 'client_id': MQTT_CLIENT_ID, 'rc': 0})
     else:
         mqtt_connected = False
-        socketio.emit('mqtt_status', {'connected': False, 'error': rc})
+        print(f"[MQTT] Connection failed rc={rc_int} client_id={MQTT_CLIENT_ID}")
+        socketio.emit('mqtt_status', {'connected': False, 'error': rc_int, 'client_id': MQTT_CLIENT_ID})
 
-def on_mqtt_disconnect(client, userdata, rc):
+def on_mqtt_disconnect(client, userdata, rc, properties=None):
     global mqtt_connected
     mqtt_connected = False
-    socketio.emit('mqtt_status', {'connected': False})
+    rc_int = int(rc) if not isinstance(rc, int) else rc
+    if rc_int == 0:
+        print(f"[MQTT] Disconnected (clean) client_id={MQTT_CLIENT_ID}")
+    else:
+        print(f"[MQTT] Disconnected (unexpected) rc={rc_int} client_id={MQTT_CLIENT_ID}")
+    socketio.emit('mqtt_status', {'connected': False, 'rc': rc_int, 'client_id': MQTT_CLIENT_ID})
+
+def on_mqtt_log(client, userdata, level, buf):
+    if MQTT_DEBUG:
+        print(f"[MQTT][LOG] {buf}")
 
 def on_mqtt_message(client, userdata, msg):
     global latest_telemetry, stats
@@ -77,16 +100,21 @@ def on_mqtt_message(client, userdata, msg):
         }
         
         # Handle telemetry from various topics
-        if "telemetry" in msg.topic or "sensors" in msg.topic:
+        topic_lower = msg.topic.lower()
+        is_telemetry_topic = any(k in topic_lower for k in ("telemetry", "sensors", "stats"))
+        is_telemetry_payload = isinstance(payload, dict) and any(
+            k in payload for k in ("sample_id", "temp", "temp_c", "accel_mag", "power", "state")
+        )
+        if is_telemetry_topic or is_telemetry_payload:
             latest_telemetry = data
             socketio.emit('telemetry', data)
-            print(f"📊 Telemetry received: {msg.topic}")
+            print(f"[MQTT] Telemetry received: {msg.topic}")
         elif "alerts" in msg.topic:
             socketio.emit('alert', data)
-            print(f"⚠️  Alert received: {msg.topic}")
+            print(f"[MQTT] Alert received: {msg.topic}")
         else:
             socketio.emit('message', data)
-            print(f"📨 Message received: {msg.topic}")
+            print(f"[MQTT] Message received: {msg.topic}")
     
     except json.JSONDecodeError as e:
         print(f"JSON decode error: {e}")
@@ -97,10 +125,15 @@ def on_mqtt_message(client, userdata, msg):
 def init_mqtt():
     global mqtt_client
     
-    mqtt_client = mqtt.Client(MQTT_CLIENT_ID)
+    mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID)
     mqtt_client.on_connect = on_mqtt_connect
     mqtt_client.on_disconnect = on_mqtt_disconnect
     mqtt_client.on_message = on_mqtt_message
+    mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+    if MQTT_DEBUG:
+        print(f"[MQTT] Debug enabled (MQTT_DEBUG=1)")
+        mqtt_client.on_log = on_mqtt_log
     
     # Set authentication if defined
     try:
@@ -111,7 +144,7 @@ def init_mqtt():
         pass
     
     try:
-        print(f"Connecting to MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
+        print(f"Connecting to MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT} (client_id={MQTT_CLIENT_ID})")
         mqtt_client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, 60)
         mqtt_client.loop_start()
         print("MQTT client started")
@@ -1341,7 +1374,13 @@ def index():
         });
         
         socket.on('mqtt_status', (status) => {
+            console.log('MQTT status:', status);
             const badge = document.getElementById('mqtt-status');
+            const tooltipParts = [];
+            if (status.client_id) tooltipParts.push(`client_id=${status.client_id}`);
+            if (status.error !== undefined) tooltipParts.push(`error=${status.error}`);
+            if (status.rc !== undefined) tooltipParts.push(`rc=${status.rc}`);
+            badge.title = tooltipParts.join(' ');
             if (status.connected) {
                 badge.textContent = 'CONNECTED';
                 badge.className = 'status-badge connected';
@@ -1365,8 +1404,8 @@ def index():
             renderDashboard(payload);
         });
         
-        socket.on('disconnect', () => {
-            console.log('Disconnected from server');
+        socket.on('disconnect', (reason) => {
+            console.log('Disconnected from server:', reason);
         });
 
         // ═══════════════════════════════════════════════════════════════
@@ -1477,7 +1516,7 @@ def static_files(path):
 
 @socketio.on('connect')
 def handle_connect():
-    socketio.emit('mqtt_status', {'connected': mqtt_connected})
+    socketio.emit('mqtt_status', {'connected': mqtt_connected, 'client_id': MQTT_CLIENT_ID})
     
     if latest_telemetry:
         socketio.emit('telemetry', latest_telemetry)

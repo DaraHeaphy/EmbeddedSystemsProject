@@ -24,20 +24,36 @@ static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 static bool s_connected = false;
 
+static const char *wifi_reason_str(uint8_t reason)
+{
+    switch (reason) {
+        case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
+        case WIFI_REASON_AUTH_FAIL: return "AUTH_FAIL";
+        case WIFI_REASON_ASSOC_FAIL: return "ASSOC_FAIL";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT: return "HANDSHAKE_TIMEOUT";
+        default: return "UNKNOWN";
+    }
+}
+
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "[WiFi] STA_START");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
+        const wifi_event_sta_disconnected_t *disc = (const wifi_event_sta_disconnected_t *)event_data;
+        uint8_t reason = disc ? disc->reason : 0;
         if (s_retry_num < WIFI_MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGI(TAG, "Retrying connection to AP... (%d/%d)", s_retry_num, WIFI_MAX_RETRY);
+            ESP_LOGW(TAG, "[WiFi] disconnected: reason=%u(%s) retry %d/%d",
+                     (unsigned)reason, wifi_reason_str(reason), s_retry_num, WIFI_MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            ESP_LOGI(TAG, "Failed to connect to AP");
+            ESP_LOGE(TAG, "[WiFi] failed to connect: reason=%u(%s)",
+                     (unsigned)reason, wifi_reason_str(reason));
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -91,7 +107,7 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi init finished, connecting to SSID: %s", WIFI_SSID);
+    ESP_LOGI(TAG, "WiFi init finished, connecting: ssid=%s max_retry=%d", WIFI_SSID, WIFI_MAX_RETRY);
 
     // Wait for connection or failure
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,

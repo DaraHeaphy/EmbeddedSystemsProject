@@ -10,6 +10,7 @@ import time
 import sys
 from datetime import datetime
 import random
+import os
 
 # Broker configuration
 BROKER_HOST = "alderaan.software-engineering.ie"
@@ -85,7 +86,7 @@ def main():
     
     # Create client
     userdata = {'connected': False, 'message_count': 0}
-    client = mqtt.Client("test_publisher")
+    client = mqtt.Client(client_id=f"test_publisher_{os.getpid()}")
     client.user_data_set(userdata)
     
     if USERNAME and PASSWORD:

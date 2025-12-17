@@ -103,7 +103,7 @@ static void agent_send_reset_normal(void)
 {
     uint8_t payload[1] = { CMD_ID_RESET_NORMAL };
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent RESET_NORMAL\n");
+    ESP_LOGI(TAG, "sent RESET_NORMAL");
 }
 
 // (optional) other hardcoded commands you might want later:
@@ -111,7 +111,7 @@ static void agent_send_scram(void)
 {
     uint8_t payload[1] = { CMD_ID_SCRAM };
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent SCRAM\n");
+    ESP_LOGI(TAG, "sent SCRAM");
 }
 
 static void agent_send_set_power(int32_t value)
@@ -120,7 +120,7 @@ static void agent_send_set_power(int32_t value)
     payload[0] = CMD_ID_SET_POWER;
     memcpy(&payload[1], &value, sizeof(value)); // little-endian on ESP32
     send_frame_uart(UART_LINK, MSG_TYPE_COMMAND, payload, (uint8_t)sizeof(payload));
-    printf("[agent] sent SET_POWER=%" PRId32 "\n", value);
+    ESP_LOGI(TAG, "sent SET_POWER=%" PRId32, value);
 }
 
 // ---------- MQTT command handler ----------
@@ -156,9 +156,6 @@ static void handle_mqtt_command(const char *data, int data_len)
     cJSON_Delete(root);
 }
 
-// Track last sample we auto-reset on, to avoid duplicates if frames repeat
-static uint32_t s_last_auto_reset_sample = UINT32_MAX;
-
 static void handle_telemetry(const uint8_t *payload, uint8_t len)
 {
     if (len != TELEMETRY_LEN) {
@@ -179,19 +176,18 @@ static void handle_telemetry(const uint8_t *payload, uint8_t len)
     state = payload[12];
     power = payload[13];
 
-    // Plain human-readable logging (no custom protocol for logging)
-    printf("sample=%" PRIu32 " temp=%.1fC accel=%.2fg state=%s(%u) power=%u%%\n",
-           sample_id, temp_c, accel_mag, state_name(state), (unsigned)state, (unsigned)power);
+    reactor_telemetry_t t = {
+        .sample_id = sample_id,
+        .temp_c = temp_c,
+        .accel_mag = accel_mag,
+        .state = state,
+        .power = power,
+    };
+    (void)telemetry_sender_update(&t);
 
-    // ---------- NEW: hard-coded command rule ----------
-    // "Set reactor state to NORMAL every 1000 samples"
-    // This maps to sending CMD_ID_RESET_NORMAL (2).
-    if (sample_id != 0 && (sample_id % 200U) == 0U) {
-        if (s_last_auto_reset_sample != sample_id) {
-            s_last_auto_reset_sample = sample_id;
-            agent_send_reset_normal();
-        }
-    }
+    // Plain human-readable logging (no custom protocol for logging)
+    ESP_LOGI(TAG, "telemetry: sample=%" PRIu32 " temp=%.1fC accel=%.2fg state=%s(%u) power=%u%%",
+             sample_id, temp_c, accel_mag, state_name(state), (unsigned)state, (unsigned)power);
 
     // If you ever want additional logic, e.g. SCRAM on extreme temp, you'd do it here:
     // if (temp_c > 95.0f) agent_send_scram();
