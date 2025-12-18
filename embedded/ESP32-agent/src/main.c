@@ -33,7 +33,6 @@ static const char *state_str(uint8_t s)
     }
 }
 
-// sends a framed command to the reactor over uart
 static void send_command(uint8_t cmd_id, const uint8_t *extra, uint8_t extra_len)
 {
     uint8_t payload[1 + extra_len];
@@ -68,7 +67,6 @@ static void send_set_power(int32_t value)
     ESP_LOGI(TAG, "sent SET_POWER=%" PRId32, value);
 }
 
-// handles incoming mqtt commands and forwards them to the reactor
 static void handle_mqtt_command(const char *data, int data_len)
 {
     cJSON *root = cJSON_ParseWithLength(data, data_len);
@@ -101,7 +99,6 @@ static void handle_mqtt_command(const char *data, int data_len)
     cJSON_Delete(root);
 }
 
-// handles telemetry frames from the reactor and queues them for mqtt
 static void handle_telemetry(const uint8_t *payload, uint8_t len)
 {
     if (len != TELEMETRY_PAYLOAD_LEN) {
